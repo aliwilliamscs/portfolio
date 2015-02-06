@@ -1,0 +1,363 @@
+/* File:     bitonic_sort.c
+ * Author:   Alexandria Williams
+ * Purpose:  Parallel implementation of bitonic sort
+ *           using pthreads. 
+ *
+ * Input:    (Optional) List of integers.
+ * Output:   Sorted list of integers.
+ *
+ * Compile:  gcc -g -Wall -o bitonic_sort bitonic_sort.c -lpthread -lm
+ * Usage:    ./pth_bitonic <thread count> <number of elements> [g] [o]
+ *             
+ *             - Optional Flags: g- Generate random list 
+ *                               o- include the original unsorted list 
+ *                                  and the final sorted list in output           
+ *
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <string.h>
+#include "timer.h"
+
+#define BARRIER_COUNT 1000
+
+long thread_count;
+long long n;   /* Global size if the list of integers */
+int* numbers;  /* Global list of integers */
+
+sem_t* sems;
+
+void Print_list();
+int Compare(const void* x_p, const void* y_p);
+void Read_list();
+void Generate_list();
+void Get_args(int argc, char* argv[]);
+void* Bitonic_sort(void* rank);
+void Usage(char* prog_name);
+void Merge_split_low(int local_A[], int temp_B[], int temp_C[], 
+         int local_n);
+void Merge_split_high(int local_A[], int temp_B[], int temp_C[], 
+        int local_n);
+void Update_list(long my_rank, int* local_list);
+
+int main(int argc, char* argv[]) {
+   long       thread;  
+   pthread_t* thread_handles;
+   double start, finish;
+   int g = 0;
+   int o = 0;
+   int i;
+
+   Get_args(argc, argv);
+
+   thread_handles = malloc (thread_count*sizeof(pthread_t));
+   sems = malloc(thread_count*sizeof(sem_t));
+   sem_init(&sems[0], 0, 1);
+   for (thread = 1; thread < thread_count; thread++)
+      sem_init(&sems[thread], 0, 0);
+
+   numbers = malloc(n*sizeof(int));
+   
+   if(argc > 3){
+      for(i = 3; i < argc; i++){
+         if(strcmp(argv[i], "g") == 0){
+            g = 1;
+         }
+         else if(strcmp(argv[i], "o") == 0){
+            o = 1;
+         }
+      }
+   }
+   
+   if(g == 1){
+      Generate_list();
+   }
+   else {
+      Read_list();
+   }
+
+   if(o == 1){
+      printf("Original List: ");
+      Print_list();
+   }
+
+   GET_TIME(start);
+
+   for (thread = 0; thread < thread_count; thread++)  
+      pthread_create(&thread_handles[thread], NULL,
+          Bitonic_sort, (void*)thread);  
+
+   for (thread = 0; thread < thread_count; thread++) 
+      pthread_join(thread_handles[thread], NULL); 
+   
+   GET_TIME(finish);
+
+   if(o == 1){
+      printf("Sorted List: ");
+      Print_list();
+   }
+
+   printf("Elapsed time = %e seconds\n", finish-start);
+
+  for (thread = 0; thread < thread_count; thread++)
+      sem_destroy(&sems[thread]);
+
+   free(sems);
+   free(thread_handles);
+
+   return 0;
+}  /* main */
+
+/*------------------------------------------------------------------
+ * Function:    Get_args
+ * Purpose:     Get the command line args
+ * In args:     argc, argv
+ * Globals out: thread_count, n
+ */
+void Get_args(int argc, char* argv[]) {
+   if (argc < 3) Usage(argv[0]);
+   thread_count = strtol(argv[1], NULL, 10);  
+   if (thread_count <= 0) Usage(argv[0]);
+   n = strtoll(argv[2], NULL, 10);
+   if (n <= 0) Usage(argv[0]);
+}  /* Get_args */
+
+
+/*------------------------------------------------------------------
+ * Function:  Usage
+ * Purpose:   Print a message explaining how to run the program
+ * In arg:    prog_name
+ */
+void Usage(char* prog_name) {
+   fprintf(stderr, "usage: %s <number of threads> <n>\n", prog_name);
+   fprintf(stderr, "   n is the number of terms and should be >= 1\n");
+   fprintf(stderr, "   n should be evenly divisible by the number of threads\n");
+   exit(0);
+}  /* Usage */
+
+
+/*-----------------------------------------------------------------
+ * Function:     Compare
+ * Purpose:      Compare two ints and determine which is larger
+ * In args:      x_p, y_p
+ * Ret val:      -1 if *x_p < *y_p
+ *                0 if *x_p == *y_p
+ *                1 otherwise
+ * Note:         For use by qsort library function
+ */
+int Compare(const void* x_p, const void* y_p) {
+   int x = *((int*)x_p);
+   int y = *((int*)y_p);
+
+   if (x < y)
+      return -1;
+   else if (x == y)
+      return 0;
+   else /* x > y */
+      return 1;
+}  /* Compare */
+
+/*-----------------------------------------------------------------
+ * Function:  Print_list
+ * Purpose:   Print the elements in the list.
+ */
+void Print_list() {
+   int i;
+
+   for (i = 0; i < n; i++)
+      printf("%d ", numbers[i]);
+   printf("\n");
+}  /* Print_list */
+
+
+
+/*-----------------------------------------------------------------
+ * Function:  Read_list
+ * Purpose:   Read elements of list from stdin
+ */
+void Read_list() {
+   int i;
+
+   printf("Please enter the elements of the list\n");
+   for (i = 0; i < n; i++)
+      scanf("%d", &numbers[i]);
+}  /* Read_list */
+
+/*-----------------------------------------------------------------
+ * Function:  Generate_list
+ * Purpose:   Generates a random list based on a seed value of one. 
+ */
+void Generate_list(){
+   int i, max;
+   srandom(1);
+   max = 999999;
+
+   for(i=0; i < n; i++){
+      numbers[i] = random() % max + 1;
+   }
+} /* Generate_list */
+
+/*-----------------------------------------------------------------
+ * Function:  Bitonic_sort
+ * Purpose:   Sort elements in a list using bitonic sort method. 
+ * In args:   rank  
+ */
+ void* Bitonic_sort(void* rank){
+   long my_rank = (long) rank;
+   int next = (my_rank + 1) % thread_count;
+   unsigned and_bit = 2;
+   unsigned bitmask = 1;
+   unsigned bitmask_2;
+   int* local_list;
+   int* partner_list;
+   int* temp_list;
+   int i, inc, local_n, partner;
+   local_n = n/thread_count;
+
+   sem_wait(&sems[my_rank]);
+   sem_post(&sems[next]);
+
+   local_list = malloc(local_n*sizeof(int));
+   partner_list = malloc(local_n*sizeof(int));
+   temp_list = malloc(local_n*sizeof(int));
+
+   for(i = 0; i < local_n; i++){
+      local_list[i] = numbers[i + local_n*my_rank]; 
+   }
+
+   qsort(local_list, local_n, sizeof(int), Compare);
+
+   while(bitmask < thread_count){
+      bitmask_2 = bitmask;
+      while(bitmask_2 >= 1){
+         partner = my_rank ^ bitmask_2; 
+         inc = my_rank & and_bit;
+
+         for(i = 0; i < local_n; i++){
+            partner_list[i] = numbers[i + local_n*partner]; 
+         }
+
+         if(inc == 0){
+            if(my_rank < partner){
+               Merge_split_low(local_list, partner_list, temp_list, local_n);
+            }
+            else{
+               Merge_split_high(local_list, partner_list, temp_list, local_n);
+            }
+         }
+         else{
+            if(my_rank > partner){
+               Merge_split_low(local_list, partner_list, temp_list, local_n);
+            }
+            else{
+               Merge_split_high(local_list, partner_list, temp_list, local_n);
+            }
+         }
+
+         Update_list(my_rank, local_list);
+
+      #  ifdef DEBUG
+         if(my_rank == 0) {
+            printf("Butterfly with %d elements: ", 2*bitmask);
+            Print_list(); 
+         }  
+         fflush(stdout);
+      #  endif
+
+         
+         bitmask_2 >>= 1;
+      }
+     
+      and_bit <<= 1;
+      bitmask <<= 1;
+   }
+    
+
+    return NULL; 
+
+ } /* Bitonic_sort */
+
+ /*-------------------------------------------------------------------
+ * Function:    Update_list
+ * Purpose:     Update the list at each stage of the sort and protect
+ * 		       the critical section with semaphores. 
+ * In args:     my_rank, local_list 
+ */
+
+void Update_list(long my_rank, int* local_list){
+   int i, local_n;
+   local_n = n/thread_count;
+   int next = (my_rank + 1) % thread_count;
+
+   sem_wait(&sems[my_rank]);
+    for(i = 0; i < local_n; i++){
+         numbers[i + local_n*my_rank] = local_list[i]; 
+      }
+    sem_post(&sems[next]);
+
+    sem_wait(&sems[my_rank]);
+    sem_post(&sems[next]);
+
+} /* Update_list */
+
+ /*-------------------------------------------------------------------
+ * Function:    Merge_split_low
+ * Purpose:     Merge the smallest local_n elements in local_A 
+ *              and temp_B into temp_C.  Then copy temp_C
+ *              back into local_A.
+ * In args:     local_n, temp_B
+ * In/out args: local_A
+ * Scratch:     temp_C
+ */
+void Merge_split_low(int local_A[], int temp_B[], int temp_C[], 
+        int local_n) {
+   int ai, bi, ci;
+   
+   ai = 0;
+   bi = 0;
+   ci = 0;
+   while (ci < local_n) {
+      if (local_A[ai] <= temp_B[bi]) {
+         temp_C[ci] = local_A[ai];
+         ci++; ai++;
+      } else {
+         temp_C[ci] = temp_B[bi];
+         ci++; bi++;
+      }
+   }
+
+   memcpy(local_A, temp_C, local_n*sizeof(int));
+}  /* Merge_split_low */
+
+/*-------------------------------------------------------------------
+ * Function:    Merge_split_high
+ * Purpose:     Merge the largest local_n elements in local_A 
+ *              and temp_B into temp_C.  Then copy temp_C
+ *              back into local_A.
+ * In args:     local_n, temp_B
+ * In/out args: local_A
+ * Scratch:     temp_C
+ */
+void Merge_split_high(int local_A[], int temp_B[], int temp_C[], 
+        int local_n) {
+   int ai, bi, ci;
+   
+   ai = local_n-1;
+   bi = local_n-1;
+   ci = local_n-1;
+   while (ci >= 0) {
+      if (local_A[ai] >= temp_B[bi]) {
+         temp_C[ci] = local_A[ai];
+         ci--; ai--;
+      } else {
+         temp_C[ci] = temp_B[bi];
+         ci--; bi--;
+      }
+   }
+
+   memcpy(local_A, temp_C, local_n*sizeof(int));
+}  /* Merge_split_low */
