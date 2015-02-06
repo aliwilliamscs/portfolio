@@ -1,0 +1,64 @@
+/* File:  heat_eq.c
+ * Author: Alexandria Williams
+ * Purpose: To calculate temperatures at specific points on a metal bar as it cools over time. 
+ *
+ * Input: m number of segments, n number of intervals, and u initial temperatures
+ * Output: Temperature of each segment at each time. 
+ *
+ * Compile: gcc -g -Wall -o heat_eq heat_eq.c
+ * Run:     ./heat_eq
+ *
+ */
+
+#include <stdio.h>
+
+const int MAX = 101;
+
+int main (void){
+
+	int n;
+	int m;
+	double u;
+	double d;
+	double h;
+	int i;
+	int j;
+	double t_j;
+
+	double new_u[MAX], old_u[MAX];
+
+	printf("Please enter number of segments (m):");
+	scanf("%d", &m);
+	printf("Please enter number of intervals (n):");
+	scanf("%d", &n);
+	
+	printf("Please enter %d initial temperatures:", m+1);
+	for(i = 0; i < n; i++){
+ 		scanf("%lf", &u);
+ 		old_u[i] = u;
+ 	}
+
+	 d = 1.0/n;
+	 h = 1.0/m;
+
+
+	for (j = 1; j <= n; j++) {
+		t_j = j*d;
+		new_u[0] = new_u[m] = 0.0;
+		for (i = 1; i < m; i++){
+			new_u[i] = old_u[i] + 
+				d/(h*h)*(old_u[i-1] - 2*old_u[i] + old_u[i+1]);
+		}
+
+		printf("%.3f ", t_j);
+
+		for(i = 0; i <= m; i++){
+			printf("%.3f ", new_u[i]);
+			old_u[i] = new_u [i];
+		}
+		printf("\n");
+	
+
+	}
+	return 0;
+}
